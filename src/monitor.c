@@ -53,6 +53,7 @@ static int callback(void *ctx, void *data, size_t size){
 
 int main(int argc, char *argv[])
 {
+    struct ring_buffer *ring_buffer_monitor = NULL;
 
     __u32 call_nums[32];
     int count = 0;
@@ -93,7 +94,7 @@ int main(int argc, char *argv[])
 
     int map_fd = bpf_map__fd(skel->maps.events);
 
-    struct ring_buffer *ring_buffer_monitor = ring_buffer__new(map_fd, callback, NULL, NULL);
+    ring_buffer_monitor = ring_buffer__new(map_fd, callback, NULL, NULL);
 
     if(!ring_buffer_monitor){
         fprintf(stderr, "Failed to create new ring buffer ---> Bad thing\n");
@@ -103,10 +104,11 @@ int main(int argc, char *argv[])
     while(1){
             ring_buffer__poll(ring_buffer_monitor, 500);  
     }
-
-    ring_buffer__free(ring_buffer_monitor);
     
     cleanup:
+        if(ring_buffer_monitor){
+            ring_buffer__free(ring_buffer_monitor);
+        }
         monitor__destroy(skel);
         return -err;
     
