@@ -40,6 +40,16 @@ static int parse_arguements(int argc, char *argv[], __u32 *pid, __u32 *call_nums
     return 0;
 }
 
+static int callback(void *ctx, void *data, size_t size){
+
+    struct syscall_event *event = data; 
+
+    printf("Received Event!\n");
+    printf("pid=%u, syscall_nr=%u, timestamp_ns=%llu\n", event->pid, event->syscall_nr, event->timestamp_ns);
+
+    return 0;
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -81,11 +91,20 @@ int main(int argc, char *argv[])
         bpf_map__update_elem(skel->maps.watched_syscalls, &call_nums[i], ss, &value, s, BPF_NOEXIST);
     }
 
+    int map_fd = bpf_map__fd(skel->maps.events);
+
+    struct ring_buffer *ring_buffer_monitor = ring_buffer__new(map_fd, callback, NULL, NULL);
+
+    if(!ring_buffer_monitor){
+        fprintf(stderr, "Failed to create new ring buffer ---> Bad thing\n");
+        goto cleanup;  
+    }
     
     while(1){
-            
-            sleep(1);  
+            ring_buffer__poll(ring_buffer_monitor, 500);  
     }
+
+    ring_buffer__free(ring_buffer_monitor);
     
     cleanup:
         monitor__destroy(skel);
