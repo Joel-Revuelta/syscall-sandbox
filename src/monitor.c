@@ -61,10 +61,10 @@ int main(int argc, char *argv[])
 
     parse_arguements(argc, argv, &pid, call_nums, &count);
 
-    struct monitor *skel;
+    struct monitor_bpf *skel;
 	int err;
     
-    skel = monitor__open_and_load();
+    skel = monitor_bpf__open_and_load();
 
     if (!skel) {
 		fprintf(stderr, "Failed to open and load BPF skeleton ---> Bad thing\n");
@@ -73,24 +73,27 @@ int main(int argc, char *argv[])
     
     printf("BPF skeleton opened and loaded ---> Good thing\n");
 
-    err = monitor__attach(skel);
+    err = monitor_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "Failed to attach BPF skeleton ---> Bad thing\n");
 		goto cleanup;
 	}
 
-
     printf("BPF skeleton was attached ---> Good thing\n");
 
-    int ss = sizeof(__u32);
-    int s = sizeof(__u8);
     __u8 value = 1;
 
-    bpf_map__update_elem(skel->maps.tracked_pids, &pid, ss, &value, s, BPF_NOEXIST);
+    bpf_map_update_elem(bpf_map__fd(skel->maps.tracked_pids), &pid, &value, BPF_ANY);
 
     for(int i = 0; i < count; i++){
-        bpf_map__update_elem(skel->maps.watched_syscalls, &call_nums[i], ss, &value, s, BPF_NOEXIST);
+        bpf_map_update_elem(bpf_map__fd(skel->maps.watched_syscalls), &call_nums[i], &value, BPF_ANY);
     }
+
+    unlink("/sys/fs/bpf/tracked_pids");
+    bpf_map__pin(skel->maps.tracked_pids, "/sys/fs/bpf/tracked_pids");
+
+    unlink("/sys/fs/bpf/watched_syscalls");
+    bpf_map__pin(skel->maps.watched_syscalls, "/sys/fs/bpf/watched_syscalls");
 
     int map_fd = bpf_map__fd(skel->maps.events);
 
@@ -104,14 +107,19 @@ int main(int argc, char *argv[])
     while(1){
             ring_buffer__poll(ring_buffer_monitor, 500);  
     }
-    
     cleanup:
+        printf("\nCleaning up...\n");
         if(ring_buffer_monitor){
             ring_buffer__free(ring_buffer_monitor);
         }
-        monitor__destroy(skel);
+
+        unlink("/sys/fs/bpf/tracked_pids");
+        unlink("/sys/fs/bpf/watched_syscalls");
+
+        if (skel) {
+            monitor_bpf__destroy(skel);
+        }
         return -err;
-    
 
     return 0;
 }
