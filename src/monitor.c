@@ -40,12 +40,20 @@ static int parse_arguements(int argc, char *argv[], __u32 *pid, __u32 *call_nums
     return 0;
 }
 
+static volatile bool exiting = false;
+
+static void sig_handler(int sig) {
+    (void)sig;
+    exiting = true;
+}
+
 static int callback(void *ctx, void *data, size_t size){
+    (void)ctx;
+    (void)size;
 
     struct syscall_event *event = data; 
 
-    printf("Received Event!\n");
-    printf("pid=%u, syscall_nr=%u, timestamp_ns=%llu\n", event->pid, event->syscall_nr, event->timestamp_ns);
+    printf("[%s] pid=%u syscall=%u\n", event->comm, event->pid, event->syscall_nr);
 
     return 0;
 }
@@ -103,10 +111,17 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to create new ring buffer ---> Bad thing\n");
         goto cleanup;  
     }
-    
-    while(1){
-            ring_buffer__poll(ring_buffer_monitor, 500);  
+
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+
+    while(!exiting){
+        err = ring_buffer__poll(ring_buffer_monitor, 500);
+        if (err == -EINTR) {
+            break;
+        }
     }
+
     cleanup:
         printf("\nCleaning up...\n");
         if(ring_buffer_monitor){
