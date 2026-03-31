@@ -4,6 +4,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
+#include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 
@@ -31,11 +32,91 @@ static int num_blocked_syscalls = 0;
 
 static DEFINE_SPINLOCK(sandbox_lock);
 
-static void add_syscall(int nr) {}
-static void remove_syscall(int nr) {}
-static void clear_syscalls(void) {}
-static void add_pid(pid_t pid) {}
-static void clear_pids(void) {}
+static void add_syscall(int nr) {
+    struct syscall_node *node;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sandbox_lock, flags);
+    list_for_each_entry(node, &blocked_syscalls, list) {
+        if (node->syscall_nr == nr) {
+            spin_unlock_irqrestore(&sandbox_lock, flags);
+            return;
+        }
+    }
+    node = kmalloc(sizeof(*node), GFP_ATOMIC);
+    if (!node) {
+        spin_unlock_irqrestore(&sandbox_lock, flags);
+        return;
+    }
+    node->syscall_nr = nr;
+    list_add_tail(&node->list, &blocked_syscalls);
+    num_blocked_syscalls++;
+    spin_unlock_irqrestore(&sandbox_lock, flags);
+}
+
+static void remove_syscall(int nr) {
+    struct syscall_node *node, *tmp;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sandbox_lock, flags);
+    list_for_each_entry_safe(node, tmp, &blocked_syscalls, list) {
+        if (node->syscall_nr == nr) {
+            list_del(&node->list);
+            kfree(node);
+            num_blocked_syscalls--;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&sandbox_lock, flags);
+}
+
+static void clear_syscalls(void) {
+    struct syscall_node *node, *tmp;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sandbox_lock, flags);
+    list_for_each_entry_safe(node, tmp, &blocked_syscalls, list) {
+        list_del(&node->list);
+        kfree(node);
+        num_blocked_syscalls--;
+    }
+    spin_unlock_irqrestore(&sandbox_lock, flags);
+}
+
+static void add_pid(pid_t pid) {
+    struct pid_node *node;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sandbox_lock, flags);
+    list_for_each_entry(node, &tracked_pids, list) {
+        if (node->pid == pid) {
+            spin_unlock_irqrestore(&sandbox_lock, flags);
+            return;
+        }
+    }
+    node = kmalloc(sizeof(*node), GFP_ATOMIC);
+    if (!node) {
+        spin_unlock_irqrestore(&sandbox_lock, flags);
+        return;
+    }
+    node->pid = pid;
+    list_add_tail(&node->list, &tracked_pids);
+    num_tracked_pids++;
+    spin_unlock_irqrestore(&sandbox_lock, flags);
+}
+
+static void clear_pids(void) {
+    struct pid_node *node, *tmp;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sandbox_lock, flags);
+    list_for_each_entry_safe(node, tmp, &tracked_pids, list) {
+        list_del(&node->list);
+        kfree(node);
+        num_tracked_pids--;
+    }
+    spin_unlock_irqrestore(&sandbox_lock, flags);
+}
 
 static int sandbox_seq_show(struct seq_file *m, void *v)
 {
