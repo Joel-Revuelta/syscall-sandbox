@@ -3,6 +3,7 @@
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/uaccess.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 
@@ -29,6 +30,12 @@ static int num_tracked_pids = 0;
 static int num_blocked_syscalls = 0;
 
 static DEFINE_SPINLOCK(sandbox_lock);
+
+static void add_syscall(int nr) {}
+static void remove_syscall(int nr) {}
+static void clear_syscalls(void) {}
+static void add_pid(pid_t pid) {}
+static void clear_pids(void) {}
 
 static int sandbox_seq_show(struct seq_file *m, void *v)
 {
@@ -59,11 +66,45 @@ static int sandbox_proc_open(struct inode *inode, struct file *file)
     return single_open(file, sandbox_seq_show, NULL);
 }
 
+static ssize_t sandbox_proc_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos)
+{
+    char buf[64];
+    long val;
+    size_t len = count;
+
+    if (len >= sizeof(buf))
+        len = sizeof(buf) - 1;
+
+    if (copy_from_user(buf, ubuf, len))
+        return -EFAULT;
+
+    buf[len] = '\0';
+
+    if (len > 0 && buf[len - 1] == '\n')
+        buf[len - 1] = '\0';
+
+    if (!strncmp(buf, "+", 1)) {
+        if (kstrtol(buf + 1, 10, &val) == 0)
+            add_syscall((int)val);
+    } else if (!strncmp(buf, "-", 1)) {
+        if (kstrtol(buf + 1, 10, &val) == 0)
+            remove_syscall((int)val);
+    } else if (!strncmp(buf, "clear", 5)) {
+        clear_syscalls();
+    } else if (!strncmp(buf, "register ", 9)) {
+        if (kstrtol(buf + 9, 10, &val) == 0)
+            add_pid((pid_t)val);
+    }
+
+    return count;
+}
+
 static const struct proc_ops sandbox_proc_ops = {
     .proc_open    = sandbox_proc_open,
     .proc_read    = seq_read,
     .proc_lseek   = seq_lseek,
     .proc_release = single_release,
+    .proc_write   = sandbox_proc_write,
 };
 
 static int __init sandbox_init(void)
@@ -81,6 +122,8 @@ static int __init sandbox_init(void)
 static void __exit sandbox_exit(void)
 {
     proc_remove(proc_entry);
+    clear_syscalls();
+    clear_pids();
     pr_info("sandbox: unloaded\n");
 }
 
