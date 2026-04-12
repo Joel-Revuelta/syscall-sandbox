@@ -37,6 +37,7 @@ int main(int argc, char *argv[])
     int size_blocked = 0;
     int status = 0;
     int sig = 0;
+    int start = 0;
     
 
     int prog = parse_args(argc, argv, &k, blocked, &size_blocked);
@@ -99,8 +100,9 @@ int main(int argc, char *argv[])
             
         }else if(WIFSTOPPED(status) && WSTOPSIG(status) != (SIGTRAP | 0x80)){
             sig = WSTOPSIG(status);
-            if(sig == SIGTRAP){
+            if(sig == SIGTRAP && start == 0){
                 sig = 0;
+                start += 1;
             }
         }
              
