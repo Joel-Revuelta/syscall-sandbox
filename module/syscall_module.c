@@ -22,35 +22,42 @@ static struct bpf_map *sandbox_map = NULL;
 
 static struct tracepoint *tp_sched_process_fork = NULL;
 
+// Struct to hold tracked PIDs in a kernel doubly-linked list
 struct pid_node {
     pid_t pid;
     struct list_head list;
 };
 
+// Struct to hold blocked syscalls in a kernel doubly-linked list
 struct syscall_node {
     int syscall_nr;
     struct list_head list;
 };
 
+// Heads of our linked lists
 static LIST_HEAD(tracked_pids);
 static LIST_HEAD(blocked_syscalls);
 
 static int num_tracked_pids = 0;
 static int num_blocked_syscalls = 0;
 
+// Spinlock to protect concurrent access to our linked lists and counters
 static DEFINE_SPINLOCK(sandbox_lock);
 
+// Safely adds a syscall number to the blocked_syscalls list
 static void add_syscall(int nr) {
     struct syscall_node *node;
     unsigned long flags;
 
     spin_lock_irqsave(&sandbox_lock, flags);
+    // Check for duplicates before inserting
     list_for_each_entry(node, &blocked_syscalls, list) {
         if (node->syscall_nr == nr) {
             spin_unlock_irqrestore(&sandbox_lock, flags);
             return;
         }
     }
+    // Allocate memory atomically as we may be called in interrupt context or with spinach locked
     node = kmalloc(sizeof(*node), GFP_ATOMIC);
     if (!node) {
         spin_unlock_irqrestore(&sandbox_lock, flags);
@@ -62,11 +69,13 @@ static void add_syscall(int nr) {
     spin_unlock_irqrestore(&sandbox_lock, flags);
 }
 
+// Safely removes a syscall number from the blocked_syscalls list
 static void remove_syscall(int nr) {
     struct syscall_node *node, *tmp;
     unsigned long flags;
 
     spin_lock_irqsave(&sandbox_lock, flags);
+    // safe version required when deleting elements during traversal
     list_for_each_entry_safe(node, tmp, &blocked_syscalls, list) {
         if (node->syscall_nr == nr) {
             list_del(&node->list);
@@ -78,6 +87,7 @@ static void remove_syscall(int nr) {
     spin_unlock_irqrestore(&sandbox_lock, flags);
 }
 
+// Deletes entirely the blocked syscall list and releases memory
 static void clear_syscalls(void) {
     struct syscall_node *node, *tmp;
     unsigned long flags;
@@ -180,6 +190,7 @@ static void probe_fork(void *ignore, struct task_struct *parent, struct task_str
     }
 }
 
+// Formats the output text whenever userspace reads /proc/syscall_sandbox
 static int sandbox_seq_show(struct seq_file *m, void *v)
 {
     struct pid_node *pnode;
@@ -188,13 +199,16 @@ static int sandbox_seq_show(struct seq_file *m, void *v)
 
     spin_lock_irqsave(&sandbox_lock, flags);
 
+    // Prints status of BPF map connection
     seq_printf(m, "BPF map: %s\n", bpf_map_attached ? "attached" : "not attached");
     
+    // Prints the tracked processes
     seq_printf(m, "Tracked PIDs (%d):\n", num_tracked_pids);
     list_for_each_entry(pnode, &tracked_pids, list) {
         seq_printf(m, "%d\n", pnode->pid);
     }
 
+    // Prints the restricted syscall numbers
     seq_printf(m, "Blocked syscalls (%d):\n", num_blocked_syscalls);
     list_for_each_entry(snode, &blocked_syscalls, list) {
         seq_printf(m, "%d\n", snode->syscall_nr);
@@ -204,11 +218,13 @@ static int sandbox_seq_show(struct seq_file *m, void *v)
     return 0;
 }
 
+// Standard sequential file open method bridging to seq_show
 static int sandbox_proc_open(struct inode *inode, struct file *file)
 {
     return single_open(file, sandbox_seq_show, NULL);
 }
 
+// Parses commands written sequentially to /proc/syscall_sandbox from userspace
 static ssize_t sandbox_proc_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos)
 {
     char buf[64];
@@ -218,14 +234,17 @@ static ssize_t sandbox_proc_write(struct file *file, const char __user *ubuf, si
     if (len >= sizeof(buf))
         len = sizeof(buf) - 1;
 
+    // Copy string from Userspace memory to Kernel memory cleanly
     if (copy_from_user(buf, ubuf, len))
         return -EFAULT;
 
     buf[len] = '\0';
 
+    // Remove any trailing newline character
     if (len > 0 && buf[len - 1] == '\n')
         buf[len - 1] = '\0';
 
+    // Parse commands starting with +, -, clear, register, setmap
     if (!strncmp(buf, "+", 1)) {
         if (kstrtol(buf + 1, 10, &val) == 0)
             add_syscall((int)val);
@@ -261,6 +280,7 @@ static ssize_t sandbox_proc_write(struct file *file, const char __user *ubuf, si
     return count;
 }
 
+// Binds our custom open and write functions to standard VFS (Virtual File System)
 static const struct proc_ops sandbox_proc_ops = {
     .proc_open    = sandbox_proc_open,
     .proc_read    = seq_read,
@@ -269,6 +289,7 @@ static const struct proc_ops sandbox_proc_ops = {
     .proc_write   = sandbox_proc_write,
 };
 
+// Module entry execution point
 static int __init sandbox_init(void)
 {
     int ret;
@@ -298,17 +319,23 @@ static int __init sandbox_init(void)
     return 0;
 }
 
+// Module unload execution point
 static void __exit sandbox_exit(void)
 {
+    // Cleanly disconnect and clean up the tracepoint hook
     if (tp_sched_process_fork) {
         tracepoint_probe_unregister(tp_sched_process_fork, probe_fork, NULL);
         tracepoint_synchronize_unregister();
     }
 
+    // Remove the /proc/syscall_sandbox file explicitly
     proc_remove(proc_entry);
+    
+    // Clean up all the dynamically allocated kernel memory internally tracking states
     clear_syscalls();
     clear_pids();
 
+    // Release back the userspace map and close out the attached BPF map file pointers
     if (sandbox_map_file) {
         fput(sandbox_map_file);
         sandbox_map_file = NULL;
